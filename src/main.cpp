@@ -8,6 +8,7 @@
 #include <deque>
 #include <random>
 #include <algorithm>
+#include <cmath>
 
 using namespace std;
 
@@ -59,33 +60,22 @@ struct Heading {
     Axis axis {};
     int sign {};
 
-    Vector3 to_vector3(){
+    Vector3 to_vector3() const {
         Vector3 vec3 {};
         switch(axis){
-            case Axis::X:
-                    vec3.x = sign;
-                break;
-            case Axis::Y:
-                    vec3.y = sign;
-                break;
-            case Axis::Z:
-                    vec3.z = sign;
-                break;
+            case Axis::X: vec3.x = sign; break;
+            case Axis::Y: vec3.y = sign; break;
+            case Axis::Z: vec3.z = sign; break;
         }
         return vec3;
     }
 
     static Heading from_vec3(const Vector3& vec3){
-        if(vec3.x > 0.5f )
-                return { Axis::X, 1};
-        if(vec3.x < -0.5f) 
-                return { Axis::X, -1 };
-        if(vec3.y > 0.5f )
-                return { Axis::Y, 1 };
-        if(vec3.y < -0.5f) 
-                return { Axis::Y, -1 };
-        if(vec3.z > 0.5f)
-                return { Axis::Z, 1 };
+        if(vec3.x > 0.5f ) return { Axis::X, 1};
+        if(vec3.x < -0.5f) return { Axis::X, -1 };
+        if(vec3.y > 0.5f ) return { Axis::Y, 1 };
+        if(vec3.y < -0.5f) return { Axis::Y, -1 };
+        if(vec3.z > 0.5f ) return { Axis::Z, 1 };
         
         return { Axis::Z, -1 };
     }
@@ -115,7 +105,6 @@ enum class CubeType {
 };
 
 class Snake{
-
 public:
   Snake(){
     int mid { static_cast<int>(Settings::GRID_SIZE) / 2 };
@@ -123,27 +112,39 @@ public:
         GridPos p { mid - i, 0, mid };
         m_body.push_back(p);
     }
+    sync_previous();
   }
+  
   struct StepResult{
     GridPos position {};
     Heading direction {};
     Heading normal {};
   };
 
-  auto& body() { return m_body; };
-  auto& head() { return m_body.front(); };
-  auto& tail() { return m_body.back(); };
+  auto& body() { return m_body; }
+  auto& head() { return m_body.front(); }
+  auto& tail() { return m_body.back(); }
+  Heading get_normal() const { return m_normal; }
+  
+  // Acesso aos dados do tick anterior para fazer a interpolação visual suave
+  const deque<GridPos>& previous_body() const { return m_previous_body; }
+  Heading get_previous_normal() const { return m_previous_normal; }
 
-  void turn(int direction_sign){
-        auto forward { m_direction.to_vector3() };
-        auto up { m_normal.to_vector3() };
-        auto right { Vector3CrossProduct(forward, up ) };
-       
-        Vector3 new_dir = direction_sign < 0 ? Vector3Scale(right, -1.0f) : right;
-        m_direction = Heading::from_vec3(new_dir);
+  void sync_previous() {
+      m_previous_body = m_body;
+      m_previous_normal = m_normal;
+  }
+
+  void set_direction(Vector3 input_dir) {
+        Vector3 current_dir = m_direction.to_vector3();
+        if (Vector3DotProduct(input_dir, current_dir) > -0.5f) {
+            m_next_direction = Heading::from_vec3(input_dir);
+        }
   }
 
   StepResult make_step(){
+    m_direction = m_next_direction; 
+
     auto position { m_body.front() };
     auto axis_index { static_cast<size_t>(m_direction.axis) };
     auto moved { position[axis_index] + m_direction.sign };
@@ -165,17 +166,26 @@ public:
   }
   
   void commit(const StepResult& result, bool grow){
+        // Salva o estado atual antes de mover, para permitir a animação suave do frame atual
+        sync_previous();
+
         m_body.push_front(result.position);
         if(!grow)
             m_body.pop_back();
+            
         m_direction = result.direction;
+        m_next_direction = result.direction; 
         m_normal = result.normal;
   }
 private:
     deque<GridPos> m_body{};
+    deque<GridPos> m_previous_body{};
+    
     Heading m_direction {Axis::X, 1};
+    Heading m_next_direction {Axis::X, 1};
+    
     Heading m_normal { Axis::Y, -1};
-
+    Heading m_previous_normal { Axis::Y, -1};
 };
 
 class Grid {
@@ -221,39 +231,110 @@ private:
 
 class Game {
 public:
-
     Game (){ reset(); }
-    void update(float dt) {
+    
+    Vector3 get_face_up(Vector3 normal) {
+        if (std::abs(normal.y) > 0.5f) return {0, 0, -normal.y}; 
+        return {0, 1, 0}; 
+    }
+
+    Vector3 get_interpolated_pos(GridPos current, GridPos previous, float progress) {
+        Vector3 cur_base = get_world_position(current);
+        Vector3 cur_norm = surface_normal(current);
+        Vector3 cur_pos = Vector3Add(cur_base, cur_norm);
+        
+        Vector3 prev_base = get_world_position(previous);
+        Vector3 prev_norm = surface_normal(previous);
+        Vector3 prev_pos = Vector3Add(prev_base, prev_norm);
+        
+        return Vector3Lerp(prev_pos, cur_pos, progress);
+    }
+
+    void update(float dt, Camera3D& camera) {
         m_counter += dt;
 
         if(m_lost){
-            if(IsKeyPressed(KEY_R))
-                reset();
+            if(IsKeyPressed(KEY_R)) reset();
         }
 
-        if(IsKeyPressed(KEY_A))
-            m_snake.turn(-1);
-        else if(IsKeyPressed(KEY_D))
-            m_snake.turn(1);
+        Vector3 logic_normal = m_snake.get_normal().to_vector3();
+        Vector3 logic_face_up = get_face_up(logic_normal);
+        Vector3 logic_face_right = Vector3CrossProduct(logic_face_up, logic_normal);
+
+        
+        Vector3 input_dir {0, 0, 0};
+        if (IsKeyPressed(KEY_W)) input_dir = logic_face_up;
+        if (IsKeyPressed(KEY_S)) input_dir = Vector3Scale(logic_face_up, -1.0f);
+        if (IsKeyPressed(KEY_D)) input_dir = logic_face_right;
+        if (IsKeyPressed(KEY_A)) input_dir = Vector3Scale(logic_face_right, -1.0f);
+
+        if (Vector3Length(input_dir) > 0.5f) {
+            m_snake.set_direction(input_dir);
+        }
 
         if (m_counter > Settings::TICK_SECONDS) {
             make_tick();
-            m_counter = 0;
+            m_counter -= Settings::TICK_SECONDS; 
         }
+
+        float progress = std::clamp(m_counter / Settings::TICK_SECONDS, 0.0f, 1.0f);
+        
+        float center_val = (Settings::CUBE_SIZE + Settings::CUBE_SPACING) * (Settings::GRID_SIZE - 1) / 2.0f;
+        Vector3 center = { center_val, center_val, center_val };
+        
+        GridPos cur_head = m_snake.head();
+        GridPos prev_head = m_snake.previous_body().empty() ? cur_head : m_snake.previous_body().front();
+        Vector3 visual_head = get_interpolated_pos(cur_head, prev_head, progress);
+        
+        Vector3 dir_to_head = Vector3Normalize(Vector3Subtract(visual_head, center));
+        
+        float zoom = 14.0f; 
+        Vector3 target_pos = Vector3Add(center, Vector3Scale(dir_to_head, zoom));
+
+        Vector3 prev_normal = m_snake.get_previous_normal().to_vector3();
+        Vector3 prev_face_up = get_face_up(prev_normal);
+        
+        // Interpola a rotação da câmera nas quinas para gerar o giro suave
+        Vector3 target_up = Vector3Normalize(Vector3Lerp(prev_face_up, logic_face_up, progress));
+
+        // Aplica o movimento da câmera de forma natural e sem solavancos
+        camera.position = Vector3Lerp(camera.position, target_pos, dt * 8.0f);
+        camera.up = Vector3Lerp(camera.up, target_up, dt * 8.0f);
+        camera.up = Vector3Normalize(camera.up);
+        camera.target = center;
     }
 
     void render() {
+        // Renderiza apenas Grade e Comida primeiro
         m_grid.foreach_cell([&](CubeType t, GridPos p) {
+            if (t == CubeType::SnakeBody || t == CubeType::SnakeHead) return; // Pula a cobra lógica
             render_cell(t, p);
         });
+
+        float progress = std::clamp(m_counter / Settings::TICK_SECONDS, 0.0f, 1.0f);
+        render_snake_smoothly(progress);
     }
 
 private:
+    void render_snake_smoothly(float progress) {
+        using namespace Settings;
+        const auto& current = m_snake.body();
+        const auto& previous = m_snake.previous_body();
+
+        for (size_t i = 0; i < current.size(); i++) {
+            GridPos cur_pos = current[i];
+            GridPos prev_pos = (i < previous.size()) ? previous[i] : current[i]; // Trata crescimento da cauda
+
+            Vector3 visual_pos = get_interpolated_pos(cur_pos, prev_pos, progress);
+            Color color = (i == 0) ? GREEN : DARKGREEN;
+            
+            DrawCube(visual_pos, CUBE_SIZE, CUBE_SIZE, CUBE_SIZE, color);
+        }
+    }
+
     void render_cell(CubeType type, GridPos position) {
         using namespace Settings;
-
-        if (type == CubeType::None)
-            return;
+        if (type == CubeType::None) return;
 
         Vector3 base { get_world_position(position) };
 
@@ -262,24 +343,10 @@ private:
             return;
         }
 
-        Color color {};
-
-        switch(type){
-            case CubeType::SnakeBody:
-                color = DARKGREEN;
-                break;
-            case CubeType::SnakeHead:
-                color = GREEN;
-                break;
-            case CubeType::Food:
-                color = RED;
-                break;
-            default:
-                break;
+        if (type == CubeType::Food) {
+            Vector3 offsetPosition = Vector3Add(base, surface_normal(position));
+            DrawCube(offsetPosition, CUBE_SIZE, CUBE_SIZE, CUBE_SIZE, RED);
         }
-        
-        Vector3 offsetPosition = Vector3Add(base, surface_normal(position));
-        DrawCube(offsetPosition, CUBE_SIZE, CUBE_SIZE, CUBE_SIZE, color);
     }
 
     void make_tick() {
@@ -321,7 +388,6 @@ private:
     }
 
     void spawn_food(){
-
         static mt19937 generator { random_device {}() }; 
         vector<GridPos> candidates {};
         m_grid.foreach_cell([&](CubeType t, GridPos p){
@@ -329,8 +395,7 @@ private:
                 candidates.push_back(p);
         });
 
-        if(candidates.empty())
-            terminate();
+        if(candidates.empty()) terminate();
         
         GridPos random_candidate {};
         sample(candidates.begin(), candidates.end(), &random_candidate, 1, generator);
@@ -352,9 +417,9 @@ int main() {
     Game game {};
 
     while (!WindowShouldClose()) {
-        game.update(GetFrameTime());
-
-        UpdateCamera(&camera, CAMERA_ORBITAL);
+        float dt = GetFrameTime();
+        
+        game.update(dt, camera);
 
         BeginDrawing();
         ClearBackground(BLACK);
