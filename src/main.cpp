@@ -15,15 +15,11 @@ namespace Settings {
     constexpr std::size_t GRID_SIZE { 10 };
     constexpr float CUBE_SIZE { .5f };
     constexpr float CUBE_SPACING { .15f };
-
-    // Ritmo do jogo: começa devagar e acelera aos poucos conforme a cobra cresce,
-    // igual ao snake clássico (nunca fica impossível, tem um piso de velocidade).
     constexpr float TICK_SECONDS_BASE  { 0.20f };
     constexpr float TICK_SECONDS_MIN   { 0.08f };
-    constexpr float TICK_SECONDS_DECAY { 0.006f }; // reduzido por segmento comido
-
+    constexpr float TICK_SECONDS_DECAY { 0.006f }; 
     constexpr float CAMERA_DISTANCE { 14.0f };
-    constexpr float CAMERA_LOOK_SPEED { 10.0f }; // suavização (independente de framerate)
+    constexpr float CAMERA_LOOK_SPEED { 10.0f }; 
 
     constexpr int SNAKE_INITIAL_LENGTH { 3 };
 }
@@ -39,12 +35,10 @@ Vector3 get_world_position(const GridPos& pos) {
     };
 }
 
-// Interpolação esférica entre dois vetores unitários — mantém velocidade angular
-// constante (diferente de lerp+normalize, que acelera/desacelera de forma irregular).
+
 Vector3 vector3_slerp(Vector3 a, Vector3 b, float t) {
     float dot = Clamp(Vector3DotProduct(a, b), -1.0f, 1.0f);
     if (dot > 0.9995f) {
-        // Quase paralelos: lerp comum já é suficiente e evita divisão por ~0.
         return Vector3Normalize(Vector3Lerp(a, b, t));
     }
     float theta = acosf(dot) * t;
@@ -52,7 +46,6 @@ Vector3 vector3_slerp(Vector3 a, Vector3 b, float t) {
     return Vector3Add(Vector3Scale(a, cosf(theta)), Vector3Scale(relative, sinf(theta)));
 }
 
-// Suavização exponencial independente de framerate (substitui o "dt * N" cru).
 float smooth_step(float current, float target, float speed, float dt) {
     float t = 1.0f - expf(-speed * dt);
     return current + (target - current) * t;
@@ -146,7 +139,7 @@ public:
   auto& tail() { return m_body.back(); }
   Heading get_normal() const { return m_normal; }
 
-  // Acesso aos dados do tick anterior para fazer a interpolação visual suave
+  
   const deque<GridPos>& previous_body() const { return m_previous_body; }
   Heading get_previous_normal() const { return m_previous_normal; }
   void sync_previous() {
@@ -154,8 +147,6 @@ public:
       m_previous_normal = m_normal;
   }
   void set_direction(Vector3 input_dir) {
-        // Compara com a direção JÁ ENFILEIRADA (não com a atual), senão dois
-        // inputs rápidos entre ticks podem enfileirar uma curva de 180°.
         Vector3 pending_dir = m_next_direction.to_vector3();
         if (Vector3DotProduct(input_dir, pending_dir) > -0.5f) {
             m_next_direction = Heading::from_vec3(input_dir);
@@ -180,7 +171,6 @@ public:
   }
 
   void commit(const StepResult& result, bool grow){
-        // Salva o estado atual antes de mover, para permitir a animação suave do frame atual
         sync_previous();
         m_body.push_front(result.position);
         if(!grow)
@@ -258,8 +248,6 @@ public:
         return Vector3Lerp(prev_pos, cur_pos, progress);
     }
 
-    // Duração do tick atual: começa em TICK_SECONDS_BASE e vai encurtando
-    // conforme a cobra cresce, com piso em TICK_SECONDS_MIN.
     float tick_seconds() const {
         using namespace Settings;
         int grown = static_cast<int>(m_snake.body().size()) - SNAKE_INITIAL_LENGTH;
@@ -273,7 +261,7 @@ public:
 
         if (m_lost) {
             if (IsKeyPressed(KEY_R)) reset();
-            return; // trava o jogo inteiro (sem input, sem tick, câmera parada)
+            return; 
         }
 
         Vector3 logic_normal = m_snake.get_normal().to_vector3();
@@ -310,21 +298,19 @@ public:
         Vector3 prev_normal = m_snake.get_previous_normal().to_vector3();
         Vector3 prev_face_up = get_face_up(prev_normal);
 
-        // Slerp com velocidade angular constante -> giro de quina redondo, sem "puxão".
+      
         Vector3 target_up = vector3_slerp(prev_face_up, logic_face_up, progress);
 
-        // target_pos/target_up JÁ são a interpolação suave (baseada no progresso do
-        // tick) — atribuir direto em vez de aplicar outro lerp por cima é o que
-        // deixa a câmera "colada" na cobra, sem atraso/duplo suavizador brigando.
+
         camera.position = target_pos;
         camera.up = Vector3Normalize(target_up);
         camera.target = center;
     }
 
     void render() {
-        // Renderiza apenas Grade e Comida primeiro
+
         m_grid.foreach_cell([&](CubeType t, GridPos p) {
-            if (t == CubeType::SnakeBody || t == CubeType::SnakeHead) return; // Pula a cobra lógica
+            if (t == CubeType::SnakeBody || t == CubeType::SnakeHead) return; 
             render_cell(t, p);
         });
         float progress = std::clamp(m_counter / m_current_tick, 0.0f, 1.0f);
@@ -366,9 +352,7 @@ private:
         auto type { m_grid.at(result.position) };
         auto ate_food { type == CubeType::Food };
 
-        // Se o próximo passo é exatamente onde a cauda está agora, e a cauda vai
-        // se mover nesse mesmo tick (não cresceu), isso NÃO é colisão — é o
-        // comportamento normal de "seguir o próprio rastro" do jogo da cobrinha.
+
         bool moving_into_tail { !ate_food && result.position == m_snake.tail() };
         bool hit_self { (type == CubeType::SnakeBody || type == CubeType::SnakeHead) && !moving_into_tail };
 
